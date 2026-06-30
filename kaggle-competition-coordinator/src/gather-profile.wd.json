@@ -1,0 +1,41 @@
+{
+  "name": "gather-profile",
+  "title": "Gather Team Member Profile",
+  "description": "Child workflow spawned once per team member by kaggle-competition-coordinator. Collects the member's self-reported strengths, weaknesses, interests, and current load via a human form assigned directly to them.",
+  "preamble": "## Domain Context\nOne run per team member. The member fills in their own profile so the parent workflow can match competitions to the team and pick a best-fit reviewer. The task is pre-assigned to the member via the userId carried in the spawn payload.",
+  "roles": ["team-member"],
+  "triggers": [{ "name": "manual", "type": "manual" }],
+  "triggerInput": [
+    { "name": "userId", "type": "string", "required": true, "description": "User id of the member this profile is for (sets the task assignee)" },
+    { "name": "email", "type": "string", "required": false, "description": "Member email, echoed for the parent's collection step" }
+  ],
+  "steps": [
+    {
+      "id": "provide_profile",
+      "name": "Provide your profile",
+      "type": "creation",
+      "executor": "human",
+      "assignedTo": "${triggerPayload.userId}",
+      "description": "Share your strengths, weaknesses, interests, and current load so the team can match competitions and assign a reviewer.",
+      "params": [
+        { "name": "strengths", "type": "textarea", "required": true, "description": "Skills and areas you are strong in (e.g. NLP, feature engineering, MLOps)" },
+        { "name": "weaknesses", "type": "textarea", "required": false, "description": "Areas you are less comfortable with or want to avoid" },
+        { "name": "interests", "type": "textarea", "required": true, "description": "Topics and competition domains that interest you" },
+        {
+          "name": "currentLoad",
+          "type": "select",
+          "required": true,
+          "options": ["low", "medium", "high"],
+          "description": "Your current workload / availability for this competition"
+        }
+      ]
+    },
+    {
+      "id": "done",
+      "name": "Done",
+      "type": "terminal",
+      "executor": "human"
+    }
+  ],
+  "transitions": [{ "from": "provide_profile", "to": "done" }]
+}

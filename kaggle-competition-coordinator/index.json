@@ -1,0 +1,16 @@
+{
+  "workflows": [
+    {
+      "name": "kaggle-competition-coordinator",
+      "path": "kaggle-competition-coordinator/src/kaggle-competition-coordinator.wd.json",
+      "description": "Coordinate a team through a Kaggle competition: profile gathering, competition matching, lead approval, repo creation, reviewer approve/revise loop, submission, and next-steps decision.",
+      "tags": ["kaggle", "coordination", "fan-out"]
+    },
+    {
+      "name": "gather-profile",
+      "path": "kaggle-competition-coordinator/src/gather-profile.wd.json",
+      "description": "Child workflow that collects one team member's strengths, weaknesses, interests, and current load.",
+      "tags": ["kaggle", "profile"]
+    }
+  ]
+}

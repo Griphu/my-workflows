@@ -1,0 +1,348 @@
+{
+  "name": "kaggle-competition-coordinator",
+  "title": "Kaggle Competition Coordinator",
+  "description": "Coordinates a team through a Kaggle competition: gathers per-member profiles via fan-out, matches competitions to the team, gates on a competition lead's approval, creates a repo, runs a reviewer approve/revise loop on the proposed solution, submits to Kaggle, and returns to the lead with the score to decide next steps.",
+  "preamble": "## Domain Context\nA team completes Kaggle competitions as a coordinated effort. The competition lead approves which competition to enter and decides next steps after each submission. Each team member self-reports strengths, weaknesses, interests, and current load; those profiles drive both competition matching and the automatic selection of a best-fit reviewer (not necessarily the lead) who runs an approve/revise loop on the proposed solution. Kaggle access (list, submit, score) is authenticated via the Kaggle CLI; the submittable file is produced by the team and uploaded before submission.",
+  "roles": ["team-member", "competition-lead", "reviewer"],
+  "triggers": [{ "name": "manual", "type": "manual" }],
+  "env": {
+    "PLATFORM_API_KEY": "{{PLATFORM_API_KEY}}",
+    "APP_BASE_URL": "{{APP_BASE_URL}}",
+    "KAGGLE_USERNAME": "{{KAGGLE_USERNAME}}",
+    "KAGGLE_KEY": "{{KAGGLE_KEY}}",
+    "GH_TOKEN": "{{GITHUB_TOKEN}}"
+  },
+  "triggerInput": [
+    {
+      "name": "namespace",
+      "type": "string",
+      "required": true,
+      "description": "Namespace handle to fetch candidate team members from"
+    },
+    {
+      "name": "profileDurationHours",
+      "type": "number",
+      "required": true,
+      "default": 24,
+      "description": "Hours to wait for team members to submit their profiles (e.g. 0.5 = 30min)"
+    },
+    {
+      "name": "githubOwner",
+      "type": "string",
+      "required": true,
+      "description": "GitHub org or user under which the competition repository is created"
+    },
+    {
+      "name": "competitionHint",
+      "type": "string",
+      "required": false,
+      "description": "Optional search term to focus the Kaggle competition listing (e.g. 'tabular', 'nlp')"
+    }
+  ],
+  "steps": [
+    {
+      "id": "fetch_members",
+      "name": "Fetch members",
+      "type": "creation",
+      "executor": "script",
+      "plugin": "script-container",
+      "description": "Fetch namespace members from the platform API as table-editor options.",
+      "script": {
+        "command": "python /opt/kaggle-coordinator/scripts/fetch_members.py",
+        "dockerfile": "kaggle-competition-coordinator/Dockerfile",
+        "repo": "https://github.com/Griphu/my-workflows.git",
+        "commit": "bb27a2b1c4174dc42f0780648d739c4993a4fb24"
+      }
+    },
+    {
+      "id": "select_members",
+      "name": "Select team members",
+      "type": "creation",
+      "executor": "human",
+      "allowedRoles": ["competition-lead"],
+      "description": "Competition lead selects which members take part in this competition.",
+      "ui": {
+        "component": "table-editor",
+        "config": {
+          "submitLabel": "Confirm team",
+          "emptyMessage": "No members found in the namespace.",
+          "columns": [
+            { "id": "avatar", "kind": "avatar", "label": "", "field": "avatarUrl", "fallbackField": "label", "size": 32 },
+            { "id": "name", "kind": "static", "label": "Name", "field": "label" },
+            { "id": "email", "kind": "static", "label": "Email", "field": "email" },
+            {
+              "id": "include",
+              "kind": "single-select",
+              "label": "Include",
+              "default": "yes",
+              "options": [
+                { "id": "yes", "label": "Yes" },
+                { "id": "no", "label": "No" }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "prepare",
+      "name": "Prepare team",
+      "type": "creation",
+      "executor": "script",
+      "plugin": "script-container",
+      "description": "Filter the included members and compute the profile collection deadline.",
+      "script": {
+        "command": "python /opt/kaggle-coordinator/scripts/prepare.py",
+        "dockerfile": "kaggle-competition-coordinator/Dockerfile",
+        "repo": "https://github.com/Griphu/my-workflows.git",
+        "commit": "bb27a2b1c4174dc42f0780648d739c4993a4fb24"
+      }
+    },
+    {
+      "id": "spawn_profiles",
+      "name": "Gather profiles",
+      "type": "creation",
+      "executor": "action",
+      "description": "Spawn a gather-profile child workflow for each selected team member.",
+      "action": {
+        "kind": "spawn",
+        "config": {
+          "forEach": "${steps.prepare.teamMembers}",
+          "targets": {
+            "definitionName": "gather-profile",
+            "payload": {
+              "userId": "${item.userId}",
+              "email": "${item.email}"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "wait_for_profiles",
+      "name": "Wait for profiles",
+      "type": "creation",
+      "executor": "action",
+      "description": "Wait until the profile collection deadline passes.",
+      "action": {
+        "kind": "wait",
+        "config": { "deadline": "${steps.prepare.deadline}" }
+      }
+    },
+    {
+      "id": "collect_profiles",
+      "name": "Collect profiles",
+      "type": "creation",
+      "executor": "script",
+      "plugin": "script-container",
+      "description": "Fetch each spawned child instance and extract the member profile.",
+      "script": {
+        "command": "python /opt/kaggle-coordinator/scripts/collect_profiles.py",
+        "dockerfile": "kaggle-competition-coordinator/Dockerfile",
+        "repo": "https://github.com/Griphu/my-workflows.git",
+        "commit": "bb27a2b1c4174dc42f0780648d739c4993a4fb24"
+      }
+    },
+    {
+      "id": "fetch_competitions",
+      "name": "Fetch competitions",
+      "type": "creation",
+      "executor": "script",
+      "plugin": "script-container",
+      "description": "List open Kaggle competitions via the Kaggle CLI, optionally filtered by competitionHint.",
+      "script": {
+        "command": "python /opt/kaggle-coordinator/scripts/fetch_competitions.py",
+        "dockerfile": "kaggle-competition-coordinator/Dockerfile",
+        "repo": "https://github.com/Griphu/my-workflows.git",
+        "commit": "bb27a2b1c4174dc42f0780648d739c4993a4fb24"
+      }
+    },
+    {
+      "id": "match_competitions",
+      "name": "Match competitions",
+      "type": "creation",
+      "executor": "agent",
+      "plugin": "claude-code-agent",
+      "autonomyLevel": "L4",
+      "description": "Rank the fetched competitions against the aggregated team profile and produce a selectable shortlist.",
+      "env": {
+        "ANTHROPIC_AUTH_TOKEN": "{{OPENROUTER_API_KEY}}",
+        "ANTHROPIC_API_KEY": "",
+        "ANTHROPIC_BASE_URL": "{{ANTHROPIC_BASE_URL}}"
+      },
+      "agent": {
+        "image": "mediforce-golden-image",
+        "model": "sonnet",
+        "timeoutMinutes": 15,
+        "prompt": "# Match Kaggle Competitions to the Team\n\nRead `/output/input.json`:\n- `steps.fetch_competitions.competitions[]` — `{ ref, title, deadline, category, reward, description }` for open competitions.\n- `steps.collect_profiles.profiles[]` — `{ userId, email, strengths, weaknesses, interests, currentLoad }` per team member.\n\n## Task\nRank the competitions by fit with the team's collective strengths and interests, and against feasibility given their weaknesses and current load. Produce a shortlist of the best 3-5 as selectable options. For each option, explain the fit in the `description`.\n\n## Output contract (MANDATORY)\n1. Write the result JSON to `/output/result.json` using bash.\n2. Your FINAL message must be ONLY: {\"output_file\": \"/output/result.json\", \"summary\": \"...\"}\n\nResult JSON shape:\n```json\n{\n  \"options\": [\n    {\n      \"label\": \"<competition title>\",\n      \"description\": \"<why it fits the team>\",\n      \"value\": { \"competitionRef\": \"<ref>\", \"title\": \"<title>\", \"deadline\": \"<deadline>\", \"category\": \"<category>\" }\n    }\n  ],\n  \"summary\": \"<one-line summary of the shortlist>\"\n}\n```\nUse only competitions present in the input. Do not invent refs."
+      }
+    },
+    {
+      "id": "review_competitions",
+      "name": "Approve competition",
+      "type": "review",
+      "executor": "human",
+      "allowedRoles": ["competition-lead"],
+      "description": "Competition lead picks one competition from the shortlist and approves entering it, or rejects to search again.",
+      "selection": 1,
+      "params": [
+        {
+          "name": "note",
+          "type": "string",
+          "required": false,
+          "description": "Optional note on the decision"
+        }
+      ],
+      "verdicts": {
+        "approve": { "target": "create_repo", "label": "Approve & enter", "intent": "success" },
+        "reject": { "target": "fetch_competitions", "label": "Reject — search again", "intent": "warning", "requiresComment": true }
+      }
+    },
+    {
+      "id": "create_repo",
+      "name": "Create repository",
+      "type": "creation",
+      "executor": "script",
+      "plugin": "script-container",
+      "description": "Create a private GitHub repository for the approved competition via the GitHub API.",
+      "script": {
+        "command": "python /opt/kaggle-coordinator/scripts/create_repo.py",
+        "dockerfile": "kaggle-competition-coordinator/Dockerfile",
+        "repo": "https://github.com/Griphu/my-workflows.git",
+        "commit": "bb27a2b1c4174dc42f0780648d739c4993a4fb24"
+      }
+    },
+    {
+      "id": "select_reviewer",
+      "name": "Select reviewer",
+      "type": "creation",
+      "executor": "agent",
+      "plugin": "claude-code-agent",
+      "autonomyLevel": "L4",
+      "description": "Pick the best-fit reviewer from the team based on expertise, interests, and current load.",
+      "env": {
+        "ANTHROPIC_AUTH_TOKEN": "{{OPENROUTER_API_KEY}}",
+        "ANTHROPIC_API_KEY": "",
+        "ANTHROPIC_BASE_URL": "{{ANTHROPIC_BASE_URL}}"
+      },
+      "agent": {
+        "image": "mediforce-golden-image",
+        "model": "sonnet",
+        "timeoutMinutes": 10,
+        "prompt": "# Select the Solution Reviewer\n\nRead `/output/input.json`:\n- `steps.collect_profiles.profiles[]` — `{ userId, email, strengths, weaknesses, interests, currentLoad }`.\n- `steps.review_competitions` — the approved competition `{ competitionRef, title, category, ... }`.\n\n## Task\nChoose exactly one team member to review the proposed solution. Favour relevant expertise and interest in the competition's domain; penalise high `currentLoad`. The reviewer need not be the competition lead. Pick a `userId` that exists in `profiles`.\n\n## Output contract (MANDATORY)\n1. Write the result JSON to `/output/result.json` using bash.\n2. Your FINAL message must be ONLY: {\"output_file\": \"/output/result.json\", \"summary\": \"...\"}\n\nResult JSON shape:\n```json\n{ \"reviewerId\": \"<userId from profiles>\", \"reviewerEmail\": \"<email>\", \"rationale\": \"<why this member, referencing expertise and load>\" }\n```"
+      }
+    },
+    {
+      "id": "propose_solution",
+      "name": "Propose solution",
+      "type": "creation",
+      "executor": "agent",
+      "plugin": "claude-code-agent",
+      "autonomyLevel": "L4",
+      "description": "Draft a solution proposal for the competition. On revise loops, incorporate the reviewer's feedback.",
+      "env": {
+        "ANTHROPIC_AUTH_TOKEN": "{{OPENROUTER_API_KEY}}",
+        "ANTHROPIC_API_KEY": "",
+        "ANTHROPIC_BASE_URL": "{{ANTHROPIC_BASE_URL}}"
+      },
+      "agent": {
+        "image": "mediforce-golden-image",
+        "model": "sonnet",
+        "timeoutMinutes": 20,
+        "prompt": "# Propose a Solution\n\nRead `/output/input.json`:\n- `steps.review_competitions` — the approved competition `{ competitionRef, title, category, deadline }`.\n- `steps.collect_profiles.profiles[]` — the team's strengths and interests.\n- `steps.create_repo` — `{ repoUrl, repoName }` for the competition repository.\n- `steps.review_proposal` (only present on revise loops) — the reviewer's `feedback` to address.\n\n## Task\nProduce a concrete solution proposal the team can execute: problem framing, data understanding, modelling approach, validation strategy, a task breakdown mapped to team members' strengths, and risks. If reviewer feedback is present, revise the proposal to address it explicitly.\n\n## Output contract (MANDATORY)\n1. Write the result JSON to `/output/result.json` using bash.\n2. Your FINAL message must be ONLY: {\"output_file\": \"/output/result.json\", \"summary\": \"...\"}\n\nResult JSON shape:\n```json\n{ \"proposal\": \"<full proposal in markdown>\", \"summary\": \"<2-3 sentence summary of the approach and what changed since last round>\" }\n```"
+      }
+    },
+    {
+      "id": "review_proposal",
+      "name": "Review proposal",
+      "type": "review",
+      "executor": "human",
+      "assignedTo": "${steps.select_reviewer.reviewerId}",
+      "description": "The selected reviewer approves the proposal for submission, or revises with feedback to send it back.",
+      "params": [
+        {
+          "name": "feedback",
+          "type": "textarea",
+          "required": false,
+          "requiredForVerdicts": ["revise"],
+          "description": "What to change before this can be submitted (required when revising)"
+        }
+      ],
+      "verdicts": {
+        "approve": { "target": "provide_submission", "label": "Approve for submission", "intent": "success" },
+        "revise": { "target": "propose_solution", "label": "Revise", "intent": "warning", "requiresComment": true }
+      }
+    },
+    {
+      "id": "provide_submission",
+      "name": "Provide submission file",
+      "type": "creation",
+      "executor": "human",
+      "allowedRoles": ["competition-lead"],
+      "description": "Upload the final submission file the team produced for the approved solution.",
+      "ui": {
+        "component": "file-upload",
+        "config": {
+          "submitLabel": "Attach submission",
+          "accept": ".csv,.zip"
+        }
+      }
+    },
+    {
+      "id": "submit_to_kaggle",
+      "name": "Submit to Kaggle",
+      "type": "creation",
+      "executor": "script",
+      "plugin": "script-container",
+      "description": "Submit the uploaded file to Kaggle and poll the submissions endpoint until the validation score lands.",
+      "script": {
+        "command": "python /opt/kaggle-coordinator/scripts/submit_to_kaggle.py",
+        "dockerfile": "kaggle-competition-coordinator/Dockerfile",
+        "repo": "https://github.com/Griphu/my-workflows.git",
+        "commit": "bb27a2b1c4174dc42f0780648d739c4993a4fb24"
+      }
+    },
+    {
+      "id": "next_steps",
+      "name": "Decide next steps",
+      "type": "decision",
+      "executor": "human",
+      "allowedRoles": ["competition-lead"],
+      "description": "Review the Kaggle validation feedback and decide what the team does next.",
+      "params": [
+        {
+          "name": "note",
+          "type": "string",
+          "required": false,
+          "description": "Optional note on the decision"
+        }
+      ],
+      "verdicts": {
+        "iterate": { "target": "propose_solution", "label": "Iterate the solution", "intent": "neutral" },
+        "new_competition": { "target": "fetch_competitions", "label": "Pick a new competition", "intent": "neutral" },
+        "conclude": { "target": "done", "label": "Conclude", "intent": "success" }
+      }
+    },
+    {
+      "id": "done",
+      "name": "Done",
+      "type": "terminal",
+      "executor": "human"
+    }
+  ],
+  "transitions": [
+    { "from": "fetch_members", "to": "select_members" },
+    { "from": "select_members", "to": "prepare" },
+    { "from": "prepare", "to": "spawn_profiles" },
+    { "from": "spawn_profiles", "to": "wait_for_profiles" },
+    { "from": "wait_for_profiles", "to": "collect_profiles" },
+    { "from": "collect_profiles", "to": "fetch_competitions" },
+    { "from": "fetch_competitions", "to": "match_competitions" },
+    { "from": "match_competitions", "to": "review_competitions" },
+    { "from": "create_repo", "to": "select_reviewer" },
+    { "from": "select_reviewer", "to": "propose_solution" },
+    { "from": "propose_solution", "to": "review_proposal" },
+    { "from": "provide_submission", "to": "submit_to_kaggle" },
+    { "from": "submit_to_kaggle", "to": "next_steps" }
+  ]
+}
