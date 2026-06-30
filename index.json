@@ -1,0 +1,16 @@
+{
+  "workflows": [
+    {
+      "name": "kaggle-collect-profile",
+      "path": "kaggle-collect-profile/src/kaggle-collect-profile.wd.json",
+      "description": "Child workflow: one team member self-reports strengths, weaknesses, interests, and availability. Spawned per member by kaggle-competition-coordination.",
+      "tags": ["kaggle", "child", "profile"]
+    },
+    {
+      "name": "kaggle-competition-coordination",
+      "path": "kaggle-competition-coordination/src/kaggle-competition-coordination.wd.json",
+      "description": "Coordinate a team end-to-end through a Kaggle competition: gather profiles, match competitions, lead approval, repo + solution proposal, reviewer-iterate loop, submit, and admin next-steps.",
+      "tags": ["kaggle", "orchestration", "fan-out"]
+    }
+  ]
+}

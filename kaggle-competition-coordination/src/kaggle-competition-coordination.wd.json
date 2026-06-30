@@ -1,0 +1,490 @@
+{
+  "name": "kaggle-competition-coordination",
+  "title": "Kaggle Competition Coordination",
+  "description": "Coordinate a team through a Kaggle competition: gather profiles (fan-out), match competitions, lead approval, repo + solution proposal, reviewer-iterate loop, submit, then admin next-steps.",
+  "preamble": "## Domain Context\nA coordinator drives a team through one Kaggle competition. Members self-report profiles via child workflows; an agent matches competitions to the team; a designated lead approves one; a repo is created and an agent drafts a written solution proposal; a reviewer (picked by fit and availability, never the lead) iterates on the proposal until approving submission; the solution is submitted to Kaggle and the public score returns to the lead/administrator to decide next steps.",
+  "roles": [
+    "coordinator"
+  ],
+  "triggers": [
+    {
+      "type": "manual",
+      "name": "manual"
+    }
+  ],
+  "env": {
+    "PLATFORM_API_KEY": "{{PLATFORM_API_KEY}}",
+    "APP_BASE_URL": "{{APP_BASE_URL}}"
+  },
+  "triggerInput": [
+    {
+      "name": "leadUserId",
+      "type": "string",
+      "required": true,
+      "description": "User id of the competition lead (also the administrator consulted after submission)."
+    },
+    {
+      "name": "durationHours",
+      "type": "number",
+      "required": true,
+      "description": "Hours to wait for team members to fill in their profiles (e.g. 24)."
+    },
+    {
+      "name": "namespace",
+      "type": "string",
+      "required": true,
+      "description": "Namespace handle to fetch team members from."
+    },
+    {
+      "name": "githubOwner",
+      "type": "string",
+      "required": true,
+      "description": "GitHub organization that will own the created competition repo."
+    }
+  ],
+  "steps": [
+    {
+      "id": "fetch_members",
+      "name": "Fetch members",
+      "type": "creation",
+      "executor": "script",
+      "plugin": "script-container",
+      "description": "Fetch organization members from the platform API as table-editor options.",
+      "script": {
+        "inlineScript": "import { readFileSync, writeFileSync } from 'fs';\ntry {\n  const input = JSON.parse(readFileSync('/output/input.json', 'utf8'));\n  const apiKey = process.env.PLATFORM_API_KEY;\n  const baseUrl = process.env.APP_BASE_URL;\n  if (!apiKey || !baseUrl) { console.error('PLATFORM_API_KEY or APP_BASE_URL missing'); process.exit(1); }\n  const ns = input.namespace;\n  if (!ns) { console.error('namespace missing from trigger input'); process.exit(1); }\n  const res = await fetch(`${baseUrl}/api/users/members?namespace=${encodeURIComponent(ns)}`, {\n    headers: { 'X-Api-Key': apiKey, Accept: 'application/json' },\n  });\n  if (!res.ok) { console.error(`Failed to fetch members: ${res.status}`); process.exit(1); }\n  const data = await res.json();\n  const options = (data.members || []).map(m => ({\n    id: m.uid,\n    label: m.displayName || m.email || m.uid,\n    email: m.email || '',\n    avatarUrl: m.avatarUrl || '',\n  }));\n  writeFileSync('/output/result.json', JSON.stringify({ options, summary: `Fetched ${options.length} member(s) from ${ns}` }));\n  console.log(`Fetched ${options.length} member(s) from ${ns}`);\n} catch (err) {\n  console.error('fetch_members crashed:', err?.stack || err?.message || String(err));\n  process.exit(1);\n}\n",
+        "runtime": "javascript",
+        "image": "mediforce-golden-image:latest"
+      }
+    },
+    {
+      "id": "select_team",
+      "name": "Select team members",
+      "type": "creation",
+      "executor": "human",
+      "allowedRoles": [
+        "coordinator"
+      ],
+      "description": "Coordinator selects which members take part in this competition.",
+      "ui": {
+        "component": "table-editor",
+        "config": {
+          "submitLabel": "Confirm team",
+          "emptyMessage": "No members found in the namespace.",
+          "columns": [
+            {
+              "id": "avatar",
+              "kind": "avatar",
+              "label": "",
+              "field": "avatarUrl",
+              "fallbackField": "label",
+              "size": 32
+            },
+            {
+              "id": "name",
+              "kind": "static",
+              "label": "Name",
+              "field": "label"
+            },
+            {
+              "id": "email",
+              "kind": "static",
+              "label": "Email",
+              "field": "email"
+            },
+            {
+              "id": "include",
+              "kind": "single-select",
+              "label": "Include",
+              "default": "yes",
+              "options": [
+                {
+                  "id": "yes",
+                  "label": "Yes"
+                },
+                {
+                  "id": "no",
+                  "label": "No"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "prepare",
+      "name": "Prepare roster",
+      "type": "creation",
+      "executor": "script",
+      "plugin": "script-container",
+      "description": "Filter the selected members and compute the profile-collection deadline.",
+      "script": {
+        "inlineScript": "import { readFileSync, writeFileSync } from 'fs';\ntry {\n  const input = JSON.parse(readFileSync('/output/input.json', 'utf8'));\n  const rows = input.steps?.select_team?.rows || [];\n  const fetched = input.steps?.fetch_members?.options || [];\n  const includedIds = new Set(rows.filter(r => r.values?.include === 'yes').map(r => r.itemId));\n  const teamMembers = fetched.filter(m => includedIds.has(m.id)).map(m => ({ userId: m.id, email: m.email, name: m.label }));\n  if (teamMembers.length === 0) { console.error('No members selected'); process.exit(1); }\n  const hours = Number(input.durationHours);\n  if (!Number.isFinite(hours) || hours <= 0) { console.error('durationHours must be a positive number'); process.exit(1); }\n  const deadline = new Date(Date.now() + hours * 3600000).toISOString();\n  writeFileSync('/output/result.json', JSON.stringify({ teamMembers, deadline, summary: `Selected ${teamMembers.length} member(s), deadline ${deadline}` }));\n  console.log(`Selected ${teamMembers.length} member(s), deadline ${deadline}`);\n} catch (err) {\n  console.error('prepare crashed:', err?.stack || err?.message || String(err));\n  process.exit(1);\n}\n",
+        "runtime": "javascript",
+        "image": "mediforce-golden-image:latest"
+      }
+    },
+    {
+      "id": "gather_profiles",
+      "name": "Gather profiles",
+      "type": "creation",
+      "executor": "action",
+      "description": "Spawn one kaggle-collect-profile child workflow per selected member.",
+      "action": {
+        "kind": "spawn",
+        "config": {
+          "forEach": "${steps.prepare.teamMembers}",
+          "targets": {
+            "definitionName": "kaggle-collect-profile",
+            "payload": {
+              "userId": "${item.userId}",
+              "name": "${item.name}",
+              "email": "${item.email}"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "await_profiles",
+      "name": "Await profiles",
+      "type": "creation",
+      "executor": "action",
+      "description": "Wait until the profile-collection deadline passes.",
+      "action": {
+        "kind": "wait",
+        "config": {
+          "deadline": "${steps.prepare.deadline}"
+        }
+      }
+    },
+    {
+      "id": "collect_profiles",
+      "name": "Collect profiles",
+      "type": "creation",
+      "executor": "script",
+      "plugin": "script-container",
+      "description": "Fetch each spawned child run and extract its profile params into a team profile list.",
+      "script": {
+        "inlineScript": "import { readFileSync, writeFileSync } from 'fs';\ntry {\n  const input = JSON.parse(readFileSync('/output/input.json', 'utf8'));\n  const spawned = input.steps?.gather_profiles?.spawned || [];\n  const teamMembers = input.steps?.prepare?.teamMembers || [];\n  const apiKey = process.env.PLATFORM_API_KEY;\n  const baseUrl = process.env.APP_BASE_URL;\n  if (!apiKey || !baseUrl) { console.error('PLATFORM_API_KEY or APP_BASE_URL missing'); process.exit(1); }\n  const profiles = [];\n  for (const entry of spawned) {\n    const member = (entry.itemIndex != null) ? teamMembers[entry.itemIndex] : null;\n    let pv = {};\n    try {\n      const res = await fetch(`${baseUrl}/api/processes/${entry.instanceId}`, {\n        headers: { 'X-Api-Key': apiKey, Accept: 'application/json' },\n      });\n      if (res.ok) { const inst = await res.json(); pv = inst.variables?.provide_profile?.paramValues || {}; }\n      else { console.error(`Failed to fetch instance ${entry.instanceId}: ${res.status}`); }\n    } catch (err) { console.error(`Error fetching instance ${entry.instanceId}: ${err?.message || err}`); }\n    profiles.push({\n      userId: member?.userId || null,\n      name: member?.name || null,\n      email: member?.email || null,\n      strengths: pv.strengths || null,\n      weaknesses: pv.weaknesses || null,\n      interests: pv.interests || null,\n      availability: pv.availability || null,\n      responded: Boolean(pv.strengths),\n    });\n  }\n  const respondedCount = profiles.filter(p => p.responded).length;\n  writeFileSync('/output/result.json', JSON.stringify({ profiles, profileCount: respondedCount, totalSpawned: spawned.length, summary: `Collected ${respondedCount} of ${spawned.length} profiles` }));\n  console.log(`Collected ${respondedCount} of ${spawned.length} profiles`);\n} catch (err) {\n  console.error('collect_profiles crashed:', err?.stack || err?.message || String(err));\n  process.exit(1);\n}\n",
+        "runtime": "javascript",
+        "image": "mediforce-golden-image:latest"
+      }
+    },
+    {
+      "id": "fetch_competitions",
+      "name": "Fetch competitions",
+      "type": "creation",
+      "executor": "script",
+      "plugin": "script-container",
+      "description": "Fetch active Kaggle competitions via the Kaggle API.",
+      "env": {
+        "KAGGLE_USERNAME": "{{KAGGLE_USERNAME}}",
+        "KAGGLE_KEY": "{{KAGGLE_KEY}}"
+      },
+      "script": {
+        "dockerfile": "kaggle-competition-coordination/Dockerfile",
+        "repo": "https://github.com/Griphu/my-workflows",
+        "commit": "0000000000000000000000000000000000000000",
+        "command": "python /opt/kaggle/scripts/fetch_competitions.py"
+      }
+    },
+    {
+      "id": "match_competitions",
+      "name": "Match competitions",
+      "type": "creation",
+      "executor": "agent",
+      "plugin": "claude-code-agent",
+      "autonomyLevel": "L4",
+      "description": "Rank competitions against the team profile and produce a shortlist for the lead to pick.",
+      "env": {
+        "ANTHROPIC_AUTH_TOKEN": "{{OPENROUTER_API_KEY}}",
+        "ANTHROPIC_API_KEY": "",
+        "ANTHROPIC_BASE_URL": "https://openrouter.ai/api"
+      },
+      "agent": {
+        "image": "mediforce-golden-image:latest",
+        "model": "sonnet",
+        "timeoutMinutes": 15,
+        "prompt": "# Match Kaggle Competitions to the Team\n\nRead `/output/input.json`:\n- `steps.collect_profiles.profiles[]` - each `{ userId, name, strengths, weaknesses, interests, availability, responded }`.\n- `steps.fetch_competitions.competitions[]` - each `{ ref, title, category, deadline, tags, description, reward }`.\n\n## Task\nRank the competitions by how well they fit the team's aggregate strengths and interests. Produce a shortlist of the 3-5 best matches. For each, explain the fit in one or two sentences grounded in the actual profiles (cite real strengths/interests). Do not invent competitions or profiles.\n\n## OUTPUT CONTRACT (MANDATORY)\n1) Write result JSON to `/output/result.json`.\n2) Your FINAL message must be ONLY: {\"output_file\": \"/output/result.json\", \"summary\": \"...\"}\n\nresult.json shape:\n{\n  \"options\": [\n    {\n      \"label\": \"<competition title>\",\n      \"description\": \"<one-line fit summary>\",\n      \"value\": { \"ref\": \"<competition ref>\", \"title\": \"<title>\", \"category\": \"<category>\", \"deadline\": \"<deadline>\", \"fitRationale\": \"<why it fits the team>\" }\n    }\n  ],\n  \"summary\": \"<one sentence overview of the shortlist>\"\n}\n"
+      }
+    },
+    {
+      "id": "lead_pick",
+      "name": "Lead picks a competition",
+      "type": "review",
+      "executor": "human",
+      "assignedTo": "${triggerPayload.leadUserId}",
+      "description": "Competition lead picks one competition from the shortlist, or sends it back, or rejects all.",
+      "selection": 1,
+      "verdicts": {
+        "approve": {
+          "target": "create_repo",
+          "label": "Approve & start",
+          "intent": "success"
+        },
+        "revise": {
+          "target": "fetch_competitions",
+          "label": "Re-search",
+          "intent": "warning",
+          "requiresComment": true
+        },
+        "reject": {
+          "target": "abandoned",
+          "label": "None suitable",
+          "intent": "danger",
+          "requiresComment": true
+        }
+      }
+    },
+    {
+      "id": "create_repo",
+      "name": "Create repository",
+      "type": "creation",
+      "executor": "action",
+      "description": "Create a private GitHub repo for the chosen competition under the configured org.",
+      "action": {
+        "kind": "http",
+        "config": {
+          "method": "POST",
+          "url": "https://api.github.com/orgs/${triggerPayload.githubOwner}/repos",
+          "headers": {
+            "Authorization": "Bearer ${secrets.GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "mediforce-kaggle-workflow"
+          },
+          "body": {
+            "name": "kaggle-${steps.lead_pick.ref}",
+            "description": "Kaggle competition: ${steps.lead_pick.title}",
+            "private": true
+          }
+        }
+      }
+    },
+    {
+      "id": "pick_reviewer",
+      "name": "Pick reviewer",
+      "type": "creation",
+      "executor": "agent",
+      "plugin": "claude-code-agent",
+      "autonomyLevel": "L4",
+      "description": "Pick a reviewer (never the lead) by expertise fit and availability.",
+      "env": {
+        "ANTHROPIC_AUTH_TOKEN": "{{OPENROUTER_API_KEY}}",
+        "ANTHROPIC_API_KEY": "",
+        "ANTHROPIC_BASE_URL": "https://openrouter.ai/api"
+      },
+      "agent": {
+        "image": "mediforce-golden-image:latest",
+        "model": "sonnet",
+        "timeoutMinutes": 15,
+        "prompt": "# Select a Solution Reviewer\n\nRead `/output/input.json`:\n- `steps.collect_profiles.profiles[]` - team profiles incl. `availability` (high/medium/low).\n- `steps.lead_pick` - the chosen competition (`ref`, `title`, `category`, `fitRationale`).\n- `leadUserId` - the competition lead; the reviewer MUST NOT be this person.\n\n## Task\nPick exactly one team member to review the solution. Weigh (a) expertise fit for this competition's domain (from strengths/interests) and (b) current availability - prefer `high`, avoid `low` (overloaded). Exclude `leadUserId`. Explain the choice.\n\n## OUTPUT CONTRACT (MANDATORY)\n1) Write result JSON to `/output/result.json`.\n2) Your FINAL message must be ONLY: {\"output_file\": \"/output/result.json\", \"summary\": \"...\"}\n\nresult.json shape:\n{ \"reviewerUserId\": \"<userId, never the lead>\", \"reviewerName\": \"<name>\", \"rationale\": \"<expertise + availability reasoning>\" }\n"
+      }
+    },
+    {
+      "id": "propose_solution",
+      "name": "Propose solution",
+      "type": "creation",
+      "executor": "agent",
+      "plugin": "claude-code-agent",
+      "autonomyLevel": "L4",
+      "description": "Draft a written solution proposal; on revise loops, incorporate reviewer feedback.",
+      "env": {
+        "ANTHROPIC_AUTH_TOKEN": "{{OPENROUTER_API_KEY}}",
+        "ANTHROPIC_API_KEY": "",
+        "ANTHROPIC_BASE_URL": "https://openrouter.ai/api"
+      },
+      "agent": {
+        "image": "mediforce-golden-image:latest",
+        "model": "sonnet",
+        "timeoutMinutes": 15,
+        "prompt": "# Propose a Solution Approach\n\nRead `/output/input.json`:\n- `steps.lead_pick` - chosen competition (`ref`, `title`, `category`, `fitRationale`).\n- `steps.collect_profiles.profiles[]` - team strengths, to assign work to specific members.\n- `steps.create_repo.body.json.html_url` - the created repo URL (if present).\n- `steps.review_solution.feedback` - reviewer feedback from a prior iteration (PRESENT ONLY on revise loops). If present, address every point.\n\n## Task\nWrite a concrete, written solution PROPOSAL (not code): approach, model choice, data strategy, evaluation metric aligned to the competition, and a task split mapping work to specific team members by strength. List key risks. On a revise loop, revise the prior proposal to address the reviewer feedback.\n\n## OUTPUT CONTRACT (MANDATORY)\n1) Write result JSON to `/output/result.json`.\n2) Your FINAL message must be ONLY: {\"output_file\": \"/output/result.json\", \"summary\": \"...\"}\n\nresult.json shape:\n{\n  \"proposal\": {\n    \"approach\": \"...\",\n    \"modelChoice\": \"...\",\n    \"dataStrategy\": \"...\",\n    \"evalMetric\": \"...\",\n    \"taskSplit\": [ { \"member\": \"<name or userId>\", \"task\": \"...\" } ],\n    \"risks\": [\"...\"]\n  },\n  \"summary\": \"...\"\n}\n"
+      }
+    },
+    {
+      "id": "review_solution",
+      "name": "Review solution",
+      "type": "review",
+      "executor": "human",
+      "assignedTo": "${steps.pick_reviewer.reviewerUserId}",
+      "description": "Selected reviewer approves the proposal for submission, or requests changes.",
+      "params": [
+        {
+          "name": "feedback",
+          "type": "textarea",
+          "required": false,
+          "requiredForVerdicts": [
+            "revise"
+          ],
+          "description": "What to change in the proposal (required when requesting changes)."
+        }
+      ],
+      "verdicts": {
+        "approve-submit": {
+          "target": "provide_submission",
+          "label": "Approve & submit",
+          "intent": "success"
+        },
+        "revise": {
+          "target": "propose_solution",
+          "label": "Request changes",
+          "intent": "warning",
+          "requiresComment": true
+        }
+      }
+    },
+    {
+      "id": "provide_submission",
+      "name": "Provide submission file",
+      "type": "creation",
+      "executor": "human",
+      "assignedTo": "${steps.pick_reviewer.reviewerUserId}",
+      "description": "Provide a direct download URL to the predictions file the team produced in the repo.",
+      "params": [
+        {
+          "name": "submissionFileUrl",
+          "type": "string",
+          "required": true,
+          "description": "Direct download URL to the predictions CSV (raw file URL)."
+        },
+        {
+          "name": "submissionMessage",
+          "type": "string",
+          "required": false,
+          "description": "Kaggle submission message."
+        }
+      ]
+    },
+    {
+      "id": "submit_kaggle",
+      "name": "Submit to Kaggle",
+      "type": "creation",
+      "executor": "script",
+      "plugin": "script-container",
+      "description": "Download the predictions file, submit to Kaggle, and read back the public score.",
+      "env": {
+        "KAGGLE_USERNAME": "{{KAGGLE_USERNAME}}",
+        "KAGGLE_KEY": "{{KAGGLE_KEY}}"
+      },
+      "script": {
+        "dockerfile": "kaggle-competition-coordination/Dockerfile",
+        "repo": "https://github.com/Griphu/my-workflows",
+        "commit": "0000000000000000000000000000000000000000",
+        "command": "python /opt/kaggle/scripts/submit_kaggle.py"
+      }
+    },
+    {
+      "id": "admin_next_steps",
+      "name": "Administrator next steps",
+      "type": "review",
+      "executor": "human",
+      "assignedTo": "${triggerPayload.leadUserId}",
+      "description": "Show the Kaggle public score to the administrator and decide whether to iterate, finish, or abandon.",
+      "params": [
+        {
+          "name": "notes",
+          "type": "textarea",
+          "required": false,
+          "description": "Notes on the result and next steps."
+        }
+      ],
+      "verdicts": {
+        "iterate": {
+          "target": "propose_solution",
+          "label": "Iterate & resubmit",
+          "intent": "warning"
+        },
+        "finish": {
+          "target": "completed",
+          "label": "Finish - satisfied",
+          "intent": "success"
+        },
+        "abandon": {
+          "target": "abandoned",
+          "label": "Abandon",
+          "intent": "danger",
+          "requiresComment": true
+        }
+      }
+    },
+    {
+      "id": "completed",
+      "name": "Completed",
+      "type": "terminal",
+      "executor": "human"
+    },
+    {
+      "id": "abandoned",
+      "name": "Abandoned",
+      "type": "terminal",
+      "executor": "human"
+    },
+    {
+      "id": "repo_failed",
+      "name": "Repo creation failed",
+      "type": "terminal",
+      "executor": "human"
+    }
+  ],
+  "transitions": [
+    {
+      "from": "fetch_members",
+      "to": "select_team"
+    },
+    {
+      "from": "select_team",
+      "to": "prepare"
+    },
+    {
+      "from": "prepare",
+      "to": "gather_profiles"
+    },
+    {
+      "from": "gather_profiles",
+      "to": "await_profiles"
+    },
+    {
+      "from": "await_profiles",
+      "to": "collect_profiles"
+    },
+    {
+      "from": "collect_profiles",
+      "to": "fetch_competitions"
+    },
+    {
+      "from": "fetch_competitions",
+      "to": "match_competitions"
+    },
+    {
+      "from": "match_competitions",
+      "to": "lead_pick"
+    },
+    {
+      "from": "create_repo",
+      "to": "pick_reviewer",
+      "when": "output.status == 201"
+    },
+    {
+      "from": "create_repo",
+      "to": "repo_failed",
+      "when": "else"
+    },
+    {
+      "from": "pick_reviewer",
+      "to": "propose_solution"
+    },
+    {
+      "from": "propose_solution",
+      "to": "review_solution"
+    },
+    {
+      "from": "provide_submission",
+      "to": "submit_kaggle"
+    },
+    {
+      "from": "submit_kaggle",
+      "to": "admin_next_steps"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "steps": {
+    "lead_pick": { "ref": "titanic", "title": "Titanic - Machine Learning from Disaster" },
+    "provide_submission": {
+      "submissionFileUrl": "https://example.com/submission.csv",
+      "submissionMessage": "Mediforce test submission"
+    }
+  }
+}

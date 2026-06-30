@@ -1,0 +1,88 @@
+{
+  "name": "kaggle-collect-profile",
+  "title": "Kaggle - Collect Member Profile",
+  "description": "Child workflow spawned once per team member. The member self-reports strengths, weaknesses, interests, and current availability. Read back by the parent's collect_profiles step.",
+  "preamble": "## Domain Context\nOne team member fills in their own profile for Kaggle competition planning. Availability is the self-reported workload signal used later to pick a non-overloaded reviewer.",
+  "triggers": [
+    {
+      "type": "manual",
+      "name": "manual"
+    }
+  ],
+  "roles": [
+    "team-member"
+  ],
+  "triggerInput": [
+    {
+      "name": "userId",
+      "type": "string",
+      "required": true,
+      "description": "User id of the member who should fill in this profile (set by the parent spawn)."
+    },
+    {
+      "name": "name",
+      "type": "string",
+      "required": false,
+      "description": "Display name of the member (informational)."
+    },
+    {
+      "name": "email",
+      "type": "string",
+      "required": false,
+      "description": "Email of the member (informational)."
+    }
+  ],
+  "steps": [
+    {
+      "id": "provide_profile",
+      "name": "Provide Your Profile",
+      "type": "creation",
+      "executor": "human",
+      "assignedTo": "${triggerPayload.userId}",
+      "description": "Describe your strengths, weaknesses, interests, and current availability for Kaggle work.",
+      "params": [
+        {
+          "name": "strengths",
+          "type": "textarea",
+          "required": true,
+          "description": "Your technical strengths (e.g. computer vision, NLP, tabular ML, feature engineering, MLOps)."
+        },
+        {
+          "name": "weaknesses",
+          "type": "textarea",
+          "required": true,
+          "description": "Areas you are weaker in or want to avoid."
+        },
+        {
+          "name": "interests",
+          "type": "textarea",
+          "required": true,
+          "description": "Problem domains / competition types you find motivating."
+        },
+        {
+          "name": "availability",
+          "type": "select",
+          "required": true,
+          "options": [
+            "high",
+            "medium",
+            "low"
+          ],
+          "description": "Your current availability / workload. low = overloaded."
+        }
+      ]
+    },
+    {
+      "id": "done",
+      "name": "Done",
+      "type": "terminal",
+      "executor": "human"
+    }
+  ],
+  "transitions": [
+    {
+      "from": "provide_profile",
+      "to": "done"
+    }
+  ]
+}
